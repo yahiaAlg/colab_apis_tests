@@ -21,7 +21,7 @@ from fastapi import Request, Depends
 app = FastAPI(
     title="Code Assistant API",
     description="API for code generation, debugging, and documentation using WizardCoder",
-    version="1.0.0",
+    version="1.0.0"
 )
 
 # Configure CORS
@@ -52,9 +52,8 @@ chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
 code_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200,
-    separators=["\nclass ", "\ndef ", "\n\n", "\n", " ", ""],
+    separators=["\nclass ", "\ndef ", "\n\n", "\n", " ", ""]
 )
-
 
 class CodeRequest(BaseModel):
     code: str
@@ -62,12 +61,10 @@ class CodeRequest(BaseModel):
     language: Optional[str] = None
     description: Optional[str] = None
 
-
 class CodeResponse(BaseModel):
     result: str
     task_type: str
     collection_id: Optional[str] = None
-
 
 class DebugRequest(BaseModel):
     code: str
@@ -75,20 +72,17 @@ class DebugRequest(BaseModel):
     include_performance_analysis: bool = False
     include_security_analysis: bool = False
 
-
 class Issue(BaseModel):
     severity: str
     message: str
     line_number: Optional[int]
     suggested_fix: str
 
-
 class DebugResponse(BaseModel):
     issues: List[Issue]
     fixed_code: str
     performance_analysis: Optional[str] = None
     security_analysis: Optional[str] = None
-
 
 def create_collection(code: str, language: str) -> str:
     """Create a collection for the code and return collection ID"""
@@ -105,16 +99,14 @@ def create_collection(code: str, language: str) -> str:
             embeddings=[embedding],
             documents=[chunk],
             metadatas=[{"language": language, "chunk_index": i}],
-            ids=[f"chunk_{i}"],
+            ids=[f"chunk_{i}"]
         )
 
     return collection_id
 
-
 def process_code_file(file: bytes) -> str:
     """Process code file content"""
     return file.decode("utf-8")
-
 
 def analyze_code(code: str, language: str) -> List[Issue]:
     """Analyze code for common issues"""
@@ -128,24 +120,18 @@ def analyze_code(code: str, language: str) -> List[Issue]:
         analysis = llm.invoke(prompt)
         issues = []
 
-        for line in analysis.split("\n"):
+        for line in analysis.split('\n'):
             try:
-                if "|" in line:
-                    parts = line.split("|")
+                if '|' in line:
+                    parts = line.split('|')
                     if len(parts) == 4:
                         severity, line_num, message, fix = parts
-                        issues.append(
-                            Issue(
-                                severity=severity.lower().strip(),
-                                line_number=(
-                                    int(line_num)
-                                    if line_num.strip().isdigit()
-                                    else None
-                                ),
-                                message=message.strip(),
-                                suggested_fix=fix.strip(),
-                            )
-                        )
+                        issues.append(Issue(
+                            severity=severity.lower().strip(),
+                            line_number=int(line_num) if line_num.strip().isdigit() else None,
+                            message=message.strip(),
+                            suggested_fix=fix.strip()
+                        ))
             except Exception as line_error:
                 print(f"Error processing analysis line: {str(line_error)}")
                 continue
@@ -156,7 +142,6 @@ def analyze_code(code: str, language: str) -> List[Issue]:
         print(f"Code analysis error: {str(e)}")
         return []
 
-
 def analyze_performance(code: str, language: str) -> str:
     """Analyze code for performance issues"""
     prompt = f"""Analyze the following {language} code for performance optimization opportunities:
@@ -164,7 +149,6 @@ def analyze_performance(code: str, language: str) -> str:
     Provide detailed performance analysis and optimization suggestions."""
 
     return llm.invoke(prompt)
-
 
 def analyze_security(code: str, language: str) -> str:
     """Analyze code for security vulnerabilities"""
@@ -174,10 +158,12 @@ def analyze_security(code: str, language: str) -> str:
 
     return llm.invoke(prompt)
 
-
 @app.post("/api/debug", response_model=DebugResponse)
 @limiter.limit("10/minute")
-async def debug_code(request: Request, debug_request: DebugRequest):
+async def debug_code(
+    request: Request,
+    debug_request: DebugRequest
+):
     try:
         # Log incoming request for debugging
         print(f"Received debug request: {debug_request}")
@@ -197,7 +183,8 @@ async def debug_code(request: Request, debug_request: DebugRequest):
         try:
             issues = []
             analysis = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: analyze_code(debug_request.code, debug_request.language)
+                None,
+                lambda: analyze_code(debug_request.code, debug_request.language)
             )
             issues.extend(analysis)
         except Exception as analysis_error:
@@ -211,22 +198,24 @@ async def debug_code(request: Request, debug_request: DebugRequest):
             Provide the complete fixed code."""
 
             fixed_code = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: llm.invoke(fix_prompt)
+                None,
+                lambda: llm.invoke(fix_prompt)
             )
         except Exception as fix_error:
             print(f"Fix generation error: {str(fix_error)}")
             fixed_code = debug_request.code  # Return original code if fix fails
 
-        response = DebugResponse(issues=issues, fixed_code=fixed_code)
+        response = DebugResponse(
+            issues=issues,
+            fixed_code=fixed_code
+        )
 
         # Optional performance analysis with error handling
         if debug_request.include_performance_analysis:
             try:
                 performance_analysis = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: analyze_performance(
-                        debug_request.code, debug_request.language
-                    ),
+                    lambda: analyze_performance(debug_request.code, debug_request.language)
                 )
                 response.performance_analysis = performance_analysis
             except Exception as perf_error:
@@ -238,9 +227,7 @@ async def debug_code(request: Request, debug_request: DebugRequest):
             try:
                 security_analysis = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: analyze_security(
-                        debug_request.code, debug_request.language
-                    ),
+                    lambda: analyze_security(debug_request.code, debug_request.language)
                 )
                 response.security_analysis = security_analysis
             except Exception as sec_error:
@@ -253,8 +240,10 @@ async def debug_code(request: Request, debug_request: DebugRequest):
         raise http_error
     except Exception as e:
         print(f"Debug endpoint error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 @app.post("/api/debug/file")
 @limiter.limit("10/minute")
@@ -262,18 +251,18 @@ async def debug_code_file(
     request: Request,
     file: UploadFile = File(...),
     include_performance_analysis: bool = False,
-    include_security_analysis: bool = False,
+    include_security_analysis: bool = False
 ):
     try:
         content = await file.read()
         code = process_code_file(content)
-        language = file.filename.split(".")[-1]
+        language = file.filename.split('.')[-1]
 
         debug_request = DebugRequest(
             code=code,
             language=language,
             include_performance_analysis=include_performance_analysis,
-            include_security_analysis=include_security_analysis,
+            include_security_analysis=include_security_analysis
         )
 
         return await debug_code(request, debug_request)
@@ -281,10 +270,12 @@ async def debug_code_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/code/generate", response_model=CodeResponse)
 @limiter.limit("10/minute")
-async def generate_code(request: Request, code_request: CodeRequest):
+async def generate_code(
+    request: Request,
+    code_request: CodeRequest
+):
     try:
         prompt = ""
         if code_request.task == "generate":
@@ -305,33 +296,41 @@ async def generate_code(request: Request, code_request: CodeRequest):
             raise HTTPException(status_code=400, detail="Invalid task type")
 
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: llm.invoke(prompt)
+            None,
+            lambda: llm.invoke(prompt)
         )
 
         # Create collection for the generated/processed code
         collection_id = create_collection(
-            code=result, language=code_request.language or "unknown"
+            code=result,
+            language=code_request.language or "unknown"
         )
 
         return CodeResponse(
-            result=result, task_type=code_request.task, collection_id=collection_id
+            result=result,
+            task_type=code_request.task,
+            collection_id=collection_id
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/code/file", response_model=CodeResponse)
+@app.post("/api/document/file", response_model=CodeResponse)
 @limiter.limit("10/minute")
 async def process_code_file_endpoint(
-    request: Request, file: UploadFile = File(...), task: str = "document"
+    request: Request,
+    file: UploadFile = File(...),
+    task: str = "document"
 ):
     try:
         content = await file.read()
         code = process_code_file(content)
 
         code_request = CodeRequest(
-            code=code, task=task, language=file.filename.split(".")[-1]
+            code=code,
+            task=task,
+            language=file.filename.split('.')[-1]
         )
 
         return await generate_code(request, code_request)
@@ -339,21 +338,19 @@ async def process_code_file_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/")
 async def root():
     return {
         "message": "Code Assistant API",
         "version": "1.0.0",
         "documentation": "/docs",
-        "health": "/health",
+        "health": "/health"
     }
-
 
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "Code Assistant API",
+        "service": "Code Assistant API"
     }
