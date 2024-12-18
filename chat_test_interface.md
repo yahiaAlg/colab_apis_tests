@@ -1,7 +1,7 @@
 ```python
 from pprint import pprint
 import ipywidgets as widgets
-from IPython.display import display, HTML
+from IPython.display import display, HTML,Markdown, display_markdown
 import requests
 import json
 from datetime import datetime
@@ -84,36 +84,77 @@ def clear_chat(b):
 
 def handle_file_upload(change):
     if not file_upload.value:
-        return
+        status.value = "<b>Status:</b> Error: No file was uplaoded"
+        raise Exception("No file was uplaoded")
 
     try:
         status.value = "<b>Status:</b> Uploading document..."
-        file_info = list(file_upload.value.values())[0]
-        files = {"file": (file_info.name, file_info.content)}
+        file_info = list(file_upload.value)[0]
+        pprint(file_info)
 
+        # Create files dictionary for upload
+        files = {
+            "file": (
+                file_info.name,
+                io.BytesIO(file_info.content),
+                "application/octet-stream",
+            )
+        }
+        pprint(
+            f"Uploading file: {file_info.name} with size: {file_info.size}"
+        )
+        # Send upload request
         response = requests.post(f"{base_url}/api/document/upload", files=files)
+
+        if response.status_code != 200:
+            raise Exception(f"Upload failed: {response.text}")
+
         result = response.json()
 
+        # Update context info
         context_info.value = f"<b>Context ID:</b> {result['context_id']}"
 
-        with output_area:
-            print(f"Document uploaded successfully: {file_info.name}")
-            print(f"Document type: {result['metadata']['type']}")
-            print(f"Size: {result['metadata']['size']} bytes")
-            print("\nPreview of processed content:")
-            print("-" * 50)
-            print(
-                result["content"][:500] + "..."
-                if len(result["content"]) > 500
-                else result["content"]
+        # Clear previous output and show upload results
+        system_output.clear_output()
+        with system_output:
+            display(
+                HTML(
+                    f"""
+                <div style="padding: 10px; border: 1px solid #4CAF50; border-radius: 5px; margin: 10px 0;">
+                    <h4 style="color: #4CAF50; margin: 0 0 10px 0;">✓ Document Upload Successful</h4>
+                    <p><strong>Filename:</strong> {file_info.name}</p>
+                    <p><strong>Context ID:</strong> {result['context_id']}</p>
+                    <p><strong>Type:</strong> {result['metadata']['type']}</p>
+                    <p><strong>Size:</strong> {result['metadata']['size']} bytes</p>
+                    <div style="margin-top: 10px;">
+                        <strong>Content Preview:</strong>
+                        <pre style="background-color: #f5f5f5; padding: 10px; border-radius: 5px; margin-top: 5px; white-space: pre-wrap;">
+{result['content'][:500] + '...' if len(result['content']) > 500 else result['content']}
+                        </pre>
+                    </div>
+                </div>
+            """
+                )
             )
-            print("-" * 50)
 
         status.value = "<b>Status:</b> Ready"
 
+        # Clear the file upload widget
+        list(file_upload.value)[0].clear()
+
     except Exception as e:
-        with output_area:
-            print(f"Error uploading document: {str(e)}")
+        system_output.clear_output()
+        with system_output:
+            display(
+                HTML(
+                    f"""
+                <div style="padding: 10px; border: 1px solid #f44336; border-radius: 5px; margin: 10px 0;">
+                    <h4 style="color: #f44336; margin: 0 0 10px 0;">✗ Upload Error</h4>
+                    <p>{str(e)}</p>
+                </div>
+            """
+                )
+            )
         status.value = "<b>Status:</b> Error occurred"
 
 
@@ -138,7 +179,9 @@ def handle_chat(b):
         # Send request
         response = requests.post(f"{base_url}/api/chat", json=payload)
         result = response.json()
-
+        pprint(
+            result,
+        )
         # Add assistant response to chat history
         chat_history.append({"role": "assistant", "content": result["response"]})
 
@@ -158,6 +201,7 @@ def handle_chat(b):
                             f'<div style="margin: 5px; padding: 10px; background-color: #f5f5f5; border-radius: 10px;"><b>Assistant:</b> {msg["content"]}</div>'
                         )
                     )
+                    display_markdown(Markdown(msg["content"]))
 
         # Clear input
         chat_input.value = ""
@@ -167,6 +211,39 @@ def handle_chat(b):
         with output_area:
             print(f"Error: {str(e)}")
         status.value = "<b>Status:</b> Error occurred"
+
+
+def clear_chat(b):
+    global chat_history
+
+    try:
+        # Get context_id if available
+        context_id = None
+        if "None" not in context_info.value:
+            context_id = context_info.value.split("Context ID:</b> ")[1]
+
+            # Call clear endpoint if context_id exists
+            if context_id:
+                response = requests.post(f"{base_url}/api/clear/{context_id}")
+                result = response.json()
+                if result["status"] == "success":
+                    chat_history = []
+                    output_area.clear_output()
+                    context_info.value = "<b>Context ID:</b> None"
+                    with output_area:
+                        print("Chat history cleared.")
+                else:
+                    with output_area:
+                        print(f"Error clearing chat: {result['message']}")
+        else:
+            chat_history = []
+            output_area.clear_output()
+            with output_area:
+                print("Chat history cleared.")
+
+    except Exception as e:
+        with output_area:
+            print(f"Error clearing chat: {str(e)}")
 
 
 def display_widgets():

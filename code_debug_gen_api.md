@@ -1,4 +1,5 @@
 ```python
+%%writefile app.py
 import os
 from typing import List, Optional, Dict
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends

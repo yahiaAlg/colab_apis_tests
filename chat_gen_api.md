@@ -1,12 +1,10 @@
 ```python
+%%writefile app.py
 import os
 from typing import List, Optional, Dict
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Depends
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from langchain_community.llms import Ollama
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
 import chromadb
 from chromadb.config import Settings
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -17,6 +15,17 @@ from datetime import datetime
 import uuid
 import PyPDF2
 import markdown
+# At the start of your FastAPI app
+import requests
+from fastapi import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import ollama
+from sentence_transformers import SentenceTransformer
+import chromadb
+from typing import List, Optional, Dict
+import io
+from collections import defaultdict
+import json
 
 app = FastAPI(
     title="Chat Assistant API",
@@ -24,6 +33,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS and rate limiting setup remains the same
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,62 +42,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Initialize Ollama and embeddings
-llm = Ollama(model="phi3", base_url="http://localhost:11434")
-embeddings = OllamaEmbeddings(model="phi3", base_url="http://localhost:11434")
+MODEL_NAME = "llama3"
+# Initialize embeddings model
 
-PERSIST_DIRECTORY = "./chroma_db"
-chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
+# Add global storage for chat histories and document contexts
+chat_histories = defaultdict(list)
+document_contexts = {}
+
+embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ". ", " ", ""]
 )
 
+# Initialize ChromaDB
+PERSIST_DIRECTORY = "./chroma_db"
+chroma_client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
 
+# Pydantic models remain the same
 class ChatMessage(BaseModel):
     role: str
     content: str
 
-
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     context_id: Optional[str] = None
-
 
 class ChatResponse(BaseModel):
     response: str
     context_id: Optional[str] = None
 
 
-class DocumentContext(BaseModel):
-    content: str
-    metadata: Dict[str, str]
-    context_id: str
-
 
 def create_collection(content: str, doc_type: str) -> str:
-    """Create a collection for the document content and return collection ID"""
     collection_id = str(uuid.uuid4())
+    print(f"Creating collection with ID: {collection_id}")
     collection = chroma_client.create_collection(name=collection_id)
 
+    # Split content into chunks (using your existing text_splitter)
     chunks = text_splitter.split_text(content)
+    print(f"Split content into {len(chunks)} chunks")
 
-    for i, chunk in enumerate(chunks):
-        embedding = embeddings.embed_query(chunk)
-        collection.add(
-            embeddings=[embedding],
-            documents=[chunk],
-            metadatas=[{"doc_type": doc_type, "chunk_index": i}],
-            ids=[f"chunk_{i}"],
-        )
+    # Get embeddings for all chunks at once (more efficient)
+    embeddings = embeddings_model.encode(chunks).tolist()
 
+    # Add to collection
+    collection.add(
+        embeddings=embeddings,
+        documents=chunks,
+        metadatas=[{"doc_type": doc_type, "chunk_index": i} for i in range(len(chunks))],
+        ids=[f"chunk_{i}" for i in range(len(chunks))]
+    )
+    
     return collection_id
-
 
 def process_pdf_file(file_content: bytes) -> str:
     """Extract text from PDF file"""
@@ -106,84 +117,138 @@ def process_markdown_file(content: bytes) -> str:
     text = html.replace("<p>", "\n").replace("</p>", "\n")
     return " ".join(text.split())
 
+def check_ollama_connection():
+    try:
+        response = requests.get("http://localhost:11434/api/version")
+        if response.status_code == 200:
+            return True
+    except requests.exceptions.ConnectionError:
+        return False
+    return False
+
+@app.on_event("startup")
+async def startup_event():
+    if not check_ollama_connection():
+        raise RuntimeError("Cannot connect to Ollama server. Please ensure it's running on http://localhost:11434")
+
+
 
 @app.post("/api/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
 async def chat(request: Request, chat_request: ChatRequest):
     try:
-        # Format conversation history
-        conversation = "\n".join(
-            [f"{msg.role}: {msg.content}" for msg in chat_request.messages]
-        )
-
+        # Get or create chat history
+        session_id = chat_request.context_id or str(uuid.uuid4())
+        
+        # Add new message to history
+        chat_histories[session_id].extend([{"role": msg.role, "content": msg.content} 
+                                         for msg in chat_request.messages])
+        
+        # Format all messages for Ollama
+        messages = chat_histories[session_id]
+        
+        print(f"Received messages: {messages}")
+        
         # If context_id is provided, retrieve relevant context
         context = ""
-        if chat_request.context_id:
-            collection = chroma_client.get_collection(name=chat_request.context_id)
-            # Get last message for context search
-            last_message = chat_request.messages[-1].content
-            results = collection.query(
-                query_embeddings=[embeddings.embed_query(last_message)], n_results=2
-            )
-            context = " ".join(results["documents"][0])
+        if chat_request.context_id and chat_request.context_id in document_contexts:
+            try:
+                collection = chroma_client.get_collection(name=chat_request.context_id)
+                last_message = chat_request.messages[-1].content
+                query_embedding = embeddings_model.encode(last_message).tolist()
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=2
+                )
+                context = " ".join(results["documents"][0])
+                print(f"Retrieved context: {context}")
+                if context:
+                    messages.insert(0, {"role": "system", "content": f"Context: {context}"})
+            except Exception as e:
+                print(f"Error retrieving context: {str(e)}")
 
-        prompt = f"""Context: {context}
-
-Conversation:
-{conversation}
-Please proceed with the response, considering both the context and conversation history."""
-
+        print(f"Sending messages to Ollama: {messages}")
+        
         response = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: llm.invoke(prompt)
+            None,
+            lambda: ollama.chat(
+                model=MODEL_NAME,
+                messages=messages
+            )
         )
+        
+        response_content = response['message']['content']
+        print(f"Ollama response: {response_content}")
 
-        return ChatResponse(response=response, context_id=chat_request.context_id)
+        if not response_content:
+            raise ValueError("Empty response from Ollama")
+
+        # Add assistant's response to history
+        chat_histories[session_id].append({"role": "assistant", "content": response_content})
+
+        return ChatResponse(response=response_content, context_id=session_id)
 
     except Exception as e:
+        print(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/api/document/upload", response_model=DocumentContext)
+@app.post("/api/document/upload")
 @limiter.limit("10/minute")
-async def upload_document(request: Request, file: UploadFile = File(...)):
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...)
+):
     try:
         content = await file.read()
-        file_extension = file.filename.split(".")[-1].lower()
-
-        if file_extension == "pdf":
+        file_extension = file.filename.lower().split('.')[-1]
+        
+        if file_extension == 'pdf':
             text_content = process_pdf_file(content)
-            doc_type = "pdf"
-        elif file_extension in ["md", "markdown"]:
+        elif file_extension in ['txt', 'md']:
             text_content = process_markdown_file(content)
-            doc_type = "markdown"
-        elif file_extension in ["txt", "text"]:
-            text_content = content.decode("utf-8")
-            doc_type = "text"
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported file format. Please upload PDF, MD, or TXT files.",
-            )
+            raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        context_id = create_collection(text_content, doc_type)
+        context_id = create_collection(text_content, file_extension)
+        
+        # Store document context
+        document_contexts[context_id] = {
+            "filename": file.filename,
+            "type": file_extension,
+            "content": text_content
+        }
 
-        return DocumentContext(
-            content=(
-                text_content[:1000] + "..."
-                if len(text_content) > 1000
-                else text_content
-            ),
-            metadata={
-                "filename": file.filename,
-                "type": doc_type,
+        return {
+            "status": "success",
+            "context_id": context_id,
+            "metadata": {
+                "type": file_extension,
                 "size": len(content),
+                "filename": file.filename
             },
-            context_id=context_id,
-        )
+            "content": text_content[:1000] + "..." if len(text_content) > 1000 else text_content
+        }
 
     except Exception as e:
+        print(f"Error processing upload: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/clear/{context_id}")
+async def clear_history(context_id: str):
+    try:
+        if context_id in chat_histories:
+            del chat_histories[context_id]
+            if context_id in document_contexts:
+                del document_contexts[context_id]
+                try:
+                    collection = chroma_client.get_collection(name=context_id)
+                    chroma_client.delete_collection(name=context_id)
+                except:
+                    pass
+            return {"status": "success", "message": "History cleared"}
+        return {"status": "error", "message": "Context ID not found"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():

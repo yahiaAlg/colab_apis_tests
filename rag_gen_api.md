@@ -27,13 +27,6 @@ curl http://localhost:11434/api/version
 
 Cell 
 ```python
-# Install ngrok
-!pip install pyngrok
-from pyngrok import ngrok
-```
----
-Cell 
-```python
 %%writefile app.py
 import os
 from typing import List, Optional
@@ -219,43 +212,3 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "RAG QA API"
     }
-```
-
----
-Cell 
-```bash
-!ngrok config add-authtoken 2pqAryFpOn6pt3y4F8by2rV7eVl_HnmvLCipjgjzuxMiRCwb
-```
-Cell 
-```python
-import uvicorn
-from pyngrok import ngrok
-import asyncio
-import nest_asyncio
-import os
-
-# Apply nest_asyncio to allow running async code in Jupyter
-nest_asyncio.apply()
-
-async def setup_ngrok():
-    # Set up ngrok tunnel
-    public_url = ngrok.connect(8000)
-    print(f"Public URL: {public_url}")
-    return public_url
-
-def start_server():
-    # Start FastAPI
-    uvicorn.run("app:app", host="0.0.0.0", port=8000)
-
-async def main():
-    # Setup ngrok in the background
-    public_url = await setup_ngrok()
-
-    # Start the server
-    start_server()
-
-if __name__ == "__main__":
-    # Run the async main function
-    asyncio.run(main())
-```
-
